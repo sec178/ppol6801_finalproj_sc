@@ -1,0 +1,505 @@
+---
+title: "Text as Data - Final Project"
+author: "Sam Cohen"
+date: "2025-02-17"
+output: html_document
+---
+
+## Setup
+```{r}
+# Loading packages
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(pacman)
+library(plm)
+library(quanteda)
+library(quanteda.textstats)
+library(pdftools)
+library(tibble)
+library(sentimentr)
+library(topicmodels)
+library(tidytext)
+library(countrycode)  
+library(sf)
+library(rnaturalearth)
+library(WDI)
+library(broom)
+library(stargazer)
+library(wordcloud)
+library(tm)
+library(RColorBrewer)
+
+pacman::p_load(readtext)
+pacman::p_load(quanteda.textplots, quanteda.textstats)
+pacman::p_load("quanteda.dictionaries", "quanteda.sentiment")
+
+set.seed(10)
+
+```
+
+Reading in data
+```{r}
+# Reading in data
+un <- read.csv("UNGDC_1946-2023.csv") # UN data
+wbi <- read.csv("wbi.csv") # world bank indicators data
+
+```
+
+Preliminary cleanup
+```{r}
+# Creating country name variable
+un <- un %>%
+  mutate(country_name = countrycode(ccodealp, origin = "iso3c", destination = "country.name"))
+  
+# Observing data
+un %>% head()
+```
+Data Source: https://www.kaggle.com/datasets/namigabbasov/united-nations-general-debate-corpus-1946-2023?resource=download
+
+# ---
+
+## *Cleaning*
+
+### Creating Corpus
+
+```{r}
+# Creating corpus
+corpus <- corpus(un, text_field = "text")
+
+# Preprocessing 
+tokens <- tokens(corpus, 
+                 split_hyphens = FALSE, # keep hyphenated words
+                 to_lower = TRUE, # convert all to lowercase 
+                 remove_punct = TRUE, # remove punctuation
+                 remove_numbers = TRUE, # remove digits
+                 remove_symbols = TRUE, # remove symbols
+                 remove_url = TRUE, # remove links
+                 valuetype = "regex") %>%  
+  tokens_tolower() %>% # to lowercase
+  tokens_remove(stopwords("en")) # remove stopwords
+tokens <- tokens_wordstem(tokens) # stem
+
+```
+
+### Creating DFM
+
+```{r}
+# Creating DFM matrix
+dfm <- dfm(tokens, min_docfreq = 0.05, max_docfreq = 0.95, docfreq_type = "prop", verbose = TRUE) # Min doc freq of 5% and max of 95%
+
+dfm %>% head()
+```
+
+# ---
+
+## *Sentiment Analysis and Topic Modeling*
+
+### Lexicoder Sentiment Dictionary
+
+Applying LSD dictionary
+```{r}
+# Lexicoder Sentiment Dictionary
+
+## Calculating LSD sentiment analysis scores
+sentiment_lsd <- dfm_lookup(dfm, dictionary = data_dictionary_LSD2015) # Applying LSD to DFM
+sentiment_lsd <- convert(sentiment_lsd, to = "data.frame") # Converting to DF
+sentiment_lsd$lsd_net_sent <- sentiment_lsd$positive - sentiment_lsd$negative # Calculating net sentiment scores
+
+## Merging net sentiment scores to UN DF
+un <- un %>%
+  left_join(sentiment_lsd %>% select(doc_id, lsd_net_sent), by = "doc_id")
+
+```
+
+Plotting sentiment over time
+```{r}
+# Create the line plot of LSD net sentiment (USA)
+ggplot(un[un$ccodealp == "USA",], aes(x = year, y = lsd_net_sent)) +
+  geom_line() +
+  labs(title = "US Net Sentiment", x = "Year", y = "Value")
+
+# ... and mean net sentiment the world
+ggplot(un %>% group_by(year) %>% summarize(mean_lsd_net_sent = mean(lsd_net_sent)), aes(x = year, y = mean_lsd_net_sent)) +
+  geom_line(color = "#3498db",
+            linewidth = 1) +
+  labs(title = "Mean World Net Sentiment Over Time", x = "Year", y = "Net Sent.") +
+  ylim(0, 100) +
+  theme_get() +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, margin = margin(b = 10)),
+    #panel.grid.major = element_line(color = "grey92"),
+    axis.line.x = element_line(color = "grey30"),
+    plot.margin = margin(20, 20, 20, 20)
+  )
+
+```
+
+
+### Topic Modeling: LDA
+
+
+Perplexity: Determining best K
+```{r}
+# Sampling DFM for computational efficiency
+un_sample_dfm <- dfm_sample(dfm, size = round(.1*ndoc(dfm))) # taking 10% sample
+
+
+# LDA models for different K groups
+#un_lda_3 <- LDA(un_sample_dfm, k = 3, control = list(seed = 10)) # k = 3
+#un_lda_5 <- LDA(un_sample_dfm, k = 5, control = list(seed = 10)) # k = 5
+#un_lda_7 <- LDA(un_sample_dfm, k = 7, control = list(seed = 10)) # k = 7
+un_lda_10 <- LDA(un_sample_dfm, k = 10, control = list(seed = 10)) # k = 10
+
+# Calculating perplexities for each K
+#perplexity_3 <- perplexity(un_lda_3, new_data = un_sample_dfm)
+#perplexity_5 <- perplexity(un_lda_5, new_data = un_sample_dfm)
+#perplexity_7 <- perplexity(un_lda_7, new_data = un_sample_dfm)
+perplexity_10 <- perplexity(un_lda_10, new_data = un_sample_dfm)
+
+#print(paste("Perplexity (k=3):", perplexity_3))
+#print(paste("Perplexity (k=5):", perplexity_5))
+#print(paste("Perplexity (k=7):", perplexity_7))
+print(paste("Perplexity (k=10):", perplexity_10))
+
+
+```
+
+Applying LDA
+```{r}
+
+# LDA initialization
+
+k <- 10 # n topics
+un_lda <- LDA(dfm, 
+              k = k, # number of topics 
+              method = "Gibbs", # method
+              control = list(#alpha = 50/k, # alpha = 50/n topics
+                             #delta = 0.1, # standard delta (for Gibbs)
+                             seed = 10))
+
+```
+
+Interpreting topics (word betas)
+```{r}
+# Topics
+un_lda_topics <- tidy(un_lda, matrix = "beta") # for words
+head(un_lda_topics)
+
+# Top 10 Terms per topc
+un_top_terms <- un_lda_topics %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 10) %>% 
+  ungroup() %>%
+  arrange(topic, -beta)
+un_top_terms
+
+```
+Probability of topics (gamma per document)
+```{r}
+# Gamma values
+gamma_un_lda <- tidy(un_lda, matrix = "gamma")
+gamma_un_lda %>% head(100)
+
+# Posterior Gamma distribution
+gamma_dist_un_lda <- as.data.frame(posterior(un_lda)$topics)
+
+# Mean gamma values by topic
+gamma_un_lda %>% group_by(topic) %>% summarize(mean(gamma))
+
+
+```
+
+Assigning topics for each speech
+```{r}
+# Fetching topic terms for each
+terms <- get_terms(un_lda, 10)
+
+# Creating topic-terms table
+terms_df <- as_tibble(terms) %>%
+  janitor::clean_names() %>%
+  pivot_longer(cols = contains("topic"), names_to = "topic", values_to = "words") %>%
+  group_by(topic) %>%
+  summarise(words = list(words)) %>%  # Collect words into a list per topic
+  mutate(words = map(words, paste, collapse = ", ")) %>%
+  unnest()
+
+# Appending topics to UN speeches names
+un_topics <- get_topics(un_lda, 1) 
+
+```
+
+Merging back to UN data frame
+```{r}
+# Creating un topic df and cleaning
+un_topics <- un_topics %>% as.data.frame()
+un_topics <- rownames_to_column(un_topics, var = "Index")
+
+colnames(un_topics)[1] <- "text"
+colnames(un_topics)[2] <- "topic"
+
+# Merging
+un <- un %>%
+  left_join(un_topics, by = c("doc_id" = "text"))
+
+# Adding titles to topics
+un$topic_title <- case_when(
+  un$topic == 1 ~ "International Development & Economic Inequality",
+  un$topic == 2 ~ "Africa & the Global South",
+  un$topic == 3 ~ "The Middle East",
+  un$topic == 4 ~ "War, Conflict, & Diplomacy",
+  un$topic == 5 ~ "Peacebuilding & Disarmament",
+  un$topic == 6 ~ "Climate, Sustainability & Development Goals",
+  un$topic == 7 ~ "Peacekeeping Operations",
+  un$topic == 8 ~ "The Cold War",
+  un$topic == 9 ~ "Island Nations",
+  un$topic == 10 ~ "International Cooperation",
+  TRUE ~ NA 
+)
+
+```
+
+
+# ---
+
+## *Merging with WBI*
+```{r}
+
+# Cleaning WBI data
+wbi2 <- wbi %>% 
+  mutate(across(everything(), ~ na_if(., ".."))) %>% # filling .. with NA
+  pivot_longer(cols = -c(Country.Name, Country.Code, Series.Name
+, Series.Code), names_to = "year", values_to = "Value") %>% # Pivoting to long
+  mutate(year = as.integer(substr(year, 2, 5))) %>% # cleaning year variable
+  select(-c(Series.Code)) %>% # omitting series code
+  filter(Series.Name != "") %>% 
+  pivot_wider(names_from = Series.Name, values_from = Value) # Pivoting wider
+
+
+# Merging w. UN data
+un <- un %>% left_join(wbi2, by = c("ccodealp" = "Country.Code", "year" = "year"))
+#un <- un %>% select(-c(X, X.1, Country.Name, Employers..total....of.total.employment...modeled.ILO.estimate., Indicator.Name
+#)) %>% rename(GDP_per_capita = GDP.per.capita..constant.2015.US.., Gini = Gini.index)
+
+un %>% head()
+```
+# ---
+
+## *Exporting*
+```{r}
+write.csv(un, file = "un_final.csv", row.names = TRUE) # UN data set w. sentiment and LDA
+write.csv(un_top_terms, file = "topics_top10terms.csv", row.names = TRUE) # Topic top 10 terms
+```
+
+# ---
+
+## *Analysis*
+
+Topic 1: International Development & Economic Inequality
+Topic 2: Africa & the Global South
+Topic 3: The Middle East
+Topic 4: War, Conflict, & Diplomacy
+Topic 5: Peacebuilding & Disarmament
+Topic 6: Climate, Sustainability & Development Goals
+Topic 7: Peacekeeping Operations
+Topic 8: The Cold War
+Topic 9: Island Nations
+Topic 10: International Cooperation
+
+
+
+Reading in data
+```{r}
+# Number of speeches by topic
+un2 <- read.csv("un_final.csv")
+
+un2 %>% head(100)
+
+```
+
+### Average word count
+```{r}
+# Word Counts
+word_counts <- sapply(strsplit(un2$text, "\\s+"), length)
+
+# Compute average word count
+average_word_count <- mean(word_counts)
+print(average_word_count)
+```
+
+### Sentiment score distribution
+```{r}
+summary(un2$lsd_net_sent)
+hist(un2$lsd_net_sent, breaks=40)
+```
+
+### Speech topics by mean sentiment score
+```{r}
+un2 %>% group_by(topic_title) %>% summarize(mean_sent = mean(lsd_net_sent)) %>% arrange(desc(mean_sent))
+
+```
+
+### Count of speeches by topic
+```{r}
+un2 %>% group_by(topic_title) %>% summarize(topic_count = n()) %>% arrange(desc(topic_count))
+
+```
+
+### Regressions
+
+
+#### Multivariate Fixed-effects regression (y=net sentiment)
+```{r}
+# Fixed effects model with selected variables
+fe_model <- plm(lsd_net_sent ~ GDP.per.capita..constant.2015.US.. + 
+                Gini.index +
+                nonwest + 
+                vdem_gender +
+                dem_bi, 
+                data = un2, 
+                index = c("country_name", "year"), 
+                model = "within", effect = "twoways")
+
+fe_model %>% summary()
+
+stargazer(fe_model,
+          type = "text", # or "latex" / "html"
+          title = "Two-Way Fixed Effects Multivariate Regression",
+          align = TRUE,   # aligns coefficients
+          dep.var.labels = "Net Sentiment (LSD)",
+          covariate.labels = c("GDP per Capita (2015 US$)", 
+                              "Gini Index", 
+                              "Non-Western Country (Binary)", 
+                              "VDEM Gender Equality", 
+                              "Democracy (Binary)"),
+          omit.stat = c("LL", "ser", "f"), # removes unnecessary stats
+          no.space = TRUE, # removes extra spaces
+          digits = 3,      # controls decimal places
+          column.sep.width = "5pt")
+
+```
+
+#### Multivariate Random-effects regression (y=net sentiment)
+```{r}
+# Fixed effects model with selected variables
+fe_rand_model <- plm(lsd_net_sent ~ GDP.per.capita..constant.2015.US.. + 
+                Gini.index +
+                nonwest + 
+                vdem_gender +
+                dem_bi, 
+                data = un2, 
+                index = c("country_name", "year"), 
+                model = "random", effect = "twoways")
+
+fe_rand_model %>% summary()
+
+```
+
+#### Topic and sentiment regressions (y=net sentiment, x=topic)
+```{r}
+# Simple regression
+lm(lsd_net_sent ~ relevel(as.factor(topic_title), ref = "Africa & the Global South"), data=un2) %>% summary() %>% tidy() # Setting Africa & The Global South as reference category due to it being around the median of sentiment scores
+
+```
+```{r}
+# Multivariate fixed-effects
+plm(lsd_net_sent ~ relevel(as.factor(topic_title), ref = "Africa & the Global South") + 
+      GDP.per.capita..constant.2015.US.. + 
+                Gini.index +
+                nonwest + 
+                vdem_gender +
+                dem_bi, 
+                data = un2, 
+                index = c("country_name", "year"), 
+                model = "random", effect = "twoways") %>% summary()
+```
+
+
+### Visualizations
+
+
+#### Counts and net sentiment of topics (bar chart)
+```{r}
+# Creating df of aggregated topic metrics
+topic_agg <- un2 %>% group_by(topic_title) %>% summarize(count = n(), mean_sent = mean(lsd_net_sent), na.rm=TRUE)
+
+# Plotting
+ggplot(topic_agg, aes(x = reorder(topic_title, count), y = count, fill=mean_sent)) +
+  geom_bar(stat="identity") +
+  coord_flip() +
+  labs(x = "Topic", 
+       y = "Count", 
+       title="Count and Avg. Net Sentiment of Topics",
+       fill="Avg. Net. Sentiment") +
+   scale_fill_gradient(
+    trans = "reverse" 
+  ) +
+  theme_minimal()
+
+```
+#### Word clouds by topic
+```{r}
+
+# iteratre through each topic to create word clouds for each w. max words=50
+for (i in unique(un2$topic_title)){
+  wordcloud(un2$text[un2$topic_title==i], max.words = 50, random.order = FALSE,          colors = brewer.pal(8, "Dark2"))
+  text(x=0.5, labels=i) # add topic title to wordcloud
+}
+
+```
+
+#### Chosen topics over time
+```{r}
+# Topics over time
+ggplot((un2 %>% filter(topic==1) %>% group_by(year, topic) %>% summarize(n=n()) %>% ungroup()), aes(x = year, y = n, color = topic)) +
+  geom_line() +
+  labs(x = "Year", y = "Value")
+```
+
+#### Chosen topic and sentiment over time
+```{r}
+topic_type <- c("Peacebuilding & Disarmament") # Topic choice input
+
+# Topic and sentiment over time
+un_long <- un2 %>% filter(topic_title==topic_type) %>% 
+  group_by(year) %>% summarize(n_topic = n(),
+                               mean_sent = mean(lsd_net_sent)) %>% 
+  pivot_longer(cols = c(mean_sent, n_topic), names_to = "variable", values_to = "value")
+
+ggplot(un_long, aes(x = year, y = value, color = variable)) +
+  geom_line() +
+  labs(x = "Year", y = "Value")
+```
+
+
+Ideas for R Shiny app:
+- Topic and sentiment overtime (worldwide)
+- Sentiment by country over time
+- Counts of topics by country (bar chart)
+- Topic counts by year by country
+- Map (year, sentiment, topic, metrics)
+
+
+#### Sentiment by chosen country over time
+```{r}
+country_choice <- c("Canada") # Input country
+
+# Sentiment by country over time
+ggplot(un2 %>% filter(country_name == country_choice) %>% 
+         group_by(year) %>% summarize(mean_sent = mean(lsd_net_sent)), aes(x = year, y = mean_sent)) +
+  geom_line() +
+  labs(x = "Year", y = "Value")
+
+```
+#### Topic counts by chosen country over time
+```{r}
+country_choice <- c("Canada") # Input country
+  
+# Counts of topics by country (bar chart)
+ggplot(un2 %>% filter(country_name == country_choice) %>% 
+         group_by(topic_title) %>% summarize(n_topic = n()), aes(x = topic_title, y = n_topic)) +
+  geom_col(fill='lightblue') +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 5)) +
+  labs(x = "Topic", y = "Count")
+
+```
