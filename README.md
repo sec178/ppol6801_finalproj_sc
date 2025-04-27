@@ -16,7 +16,7 @@ A report detailing my findings and motivations can be found in the *Report* and 
 A slide deck detailing my findings can be found in the *Slide Deck* folder.
 
 ### Sources
-The main source of the data used in this project is from the UN General Assembly General Debate Corpus, which I accessed from Kaggle [here](https://www.kaggle.com/datasets/namigabbasov/united-nations-general-debate-corpus-1946-2023?resource=download). 
+The main source of the data used in this project is from the UN General Assembly [General Debate Corpus](https://www.kaggle.com/datasets/namigabbasov/united-nations-general-debate-corpus-1946-2023?resource=download), which I accessed from Kaggle. 
 
 I augmented this data set with data from the [World Development Indicators](https://databank.worldbank.org/source/world-development-indicators) portal from the World Bank.
 
