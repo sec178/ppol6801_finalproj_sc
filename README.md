@@ -18,5 +18,5 @@ A slide deck detailing my findings can be found in the *Slide Deck* folder.
 ### Sources
 The main source of the data used in this project is from the UN General Assembly [General Debate Corpus](https://www.kaggle.com/datasets/namigabbasov/united-nations-general-debate-corpus-1946-2023?resource=download), which I accessed from Kaggle. If replicating code, download corpus data to root directory.
 
-I augmented this data set with data from the [World Development Indicators](https://databank.worldbank.org/source/world-development-indicators) portal from the World Bank. If replicating data, select GINI and GDP per capita data at the country-year level, move to root directory, and rename to "wbi.csv".
+I augmented this data set with data from the [World Development Indicators](https://databank.worldbank.org/source/world-development-indicators) portal from the World Bank. If replicating code, select GINI and GDP per capita data at the country-year level, move to root directory, and rename to "wbi.csv".
 
